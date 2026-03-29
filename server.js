@@ -433,7 +433,8 @@ Return ONLY a valid JSON array like this (no markdown, no extra text):
 Each body should be 3-4 short paragraphs, professional but warm, personalised to the audience.`
       }]
     });
-    const raw = aiRes.content[0].text.trim();
+    let raw = aiRes.content[0].text.trim();
+    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     sequence = JSON.parse(raw);
   } catch (e) {
     console.error('Claude sequence generation failed:', e.message);
