@@ -3,10 +3,12 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch');
 const { Resend } = require('resend');
+const Anthropic = require('@anthropic-ai/sdk');
 require('dotenv').config();
 
 const app = express();
 const resend = new Resend(process.env.RESEND_API_KEY);
+const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
@@ -395,7 +397,7 @@ async function sendEmail({ to_name, to_email, from_name, subject, body }) {
 }
 
 // ─── LAUNCH EMAIL CAMPAIGN ───────────────────────────────────────────────────
-// Body: { business_name, business_type, sequence: [{day, subject, body}], contacts: [{email, name}] }
+// Body: { business_name, business_type, target_audience, value_proposition, contacts: [{email, name}] }
 app.post('/campaigns/launch', async (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
@@ -403,9 +405,42 @@ app.post('/campaigns/launch', async (req, res) => {
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   if (authError || !user) return res.status(401).json({ error: 'Invalid token' });
 
-  const { business_name, business_type, sequence, contacts } = req.body;
-  if (!sequence?.length)  return res.status(400).json({ error: 'Email sequence is required' });
-  if (!contacts?.length)  return res.status(400).json({ error: 'At least one contact is required' });
+  const { business_name, business_type, target_audience, value_proposition, contacts } = req.body;
+  if (!contacts?.length) return res.status(400).json({ error: 'At least one contact is required' });
+
+  // Generate email sequence with Claude
+  let sequence;
+  try {
+    const aiRes = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1500,
+      messages: [{
+        role: 'user',
+        content: `You are an expert email marketer. Generate a 3-email drip campaign sequence as a JSON array.
+
+Business: ${business_name || 'Unknown'}
+Type: ${business_type || 'Unknown'}
+Target audience: ${target_audience || 'General audience'}
+Value proposition: ${value_proposition || 'Our product/service'}
+
+Return ONLY a valid JSON array like this (no markdown, no extra text):
+[
+  {"day": 0, "subject": "...", "body": "..."},
+  {"day": 3, "subject": "...", "body": "..."},
+  {"day": 7, "subject": "...", "body": "..."}
+]
+
+Each body should be 3-4 short paragraphs, professional but warm, personalised to the audience.`
+      }]
+    });
+    const raw = aiRes.content[0].text.trim();
+    sequence = JSON.parse(raw);
+  } catch (e) {
+    console.error('Claude sequence generation failed:', e.message);
+    return res.status(500).json({ error: 'Failed to generate email sequence: ' + e.message });
+  }
+
+  if (!sequence?.length) return res.status(500).json({ error: 'Email sequence is required' });
 
   try {
     // 1. Create campaign record
